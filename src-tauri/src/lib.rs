@@ -53,6 +53,7 @@ pub fn run() {
             ipc::commands::open_accessibility_settings,
             ipc::commands::debug_send_keyboard,
             ipc::commands::debug_send_mouse,
+            ipc::commands::absolute_pointer,
             ipc::commands::debug_tap_key,
         ])
         .build(tauri::generate_context!())

@@ -68,6 +68,7 @@ pub struct ConnectedDevice {
     peripheral: Peripheral,
     keyboard: Characteristic,
     mouse: Characteristic,
+    pen: Option<Characteristic>,
     info: DeviceInfo,
 }
 
@@ -98,6 +99,9 @@ impl ConnectedDevice {
     pub async fn write_release_all(&self) {
         let _ = self.timed_write(&self.keyboard, &KEYBOARD_RELEASE_ALL).await;
         let _ = self.timed_write(&self.mouse, &MOUSE_RELEASE_ALL).await;
+        if let Some(pen) = &self.pen {
+            let _ = self.timed_write(pen, &[0x41, 0, 0, 0, 0, 0]).await;
+        }
     }
 }
 
@@ -161,6 +165,12 @@ impl ConnHandle {
             Some(dev) => dev.write_mouse(report).await,
             None => Err("Not connected".to_string()),
         }
+    }
+
+    pub async fn write_absolute(&self, report: &[u8]) -> Result<(), String> {
+        let dev = self.current().ok_or("Not connected")?;
+        let pen = dev.pen.as_ref().ok_or("Absolute pointer channel F804 not available")?;
+        dev.timed_write(pen, report).await
     }
 
     /// Best-effort release-all on the active connection (no-op if disconnected).
@@ -434,12 +444,16 @@ pub async fn establish(
         .find(|c| c.uuid == uuids::MOUSE)
         .cloned()
         .ok_or_else(|| "Mouse characteristic (F803) not found".to_string())?;
+    let pen = chars.iter().find(|c| c.uuid == uuids::PEN).cloned();
 
     // Start every (re)connection from a clean host state: clear any key or
     // button left stuck if a previous link dropped mid-press (plan §9
     // safe-state-on-failure — the release we couldn't send then lands now).
     let _ = timed_write(&peripheral, &keyboard, &KEYBOARD_RELEASE_ALL).await;
     let _ = timed_write(&peripheral, &mouse, &MOUSE_RELEASE_ALL).await;
+    if let Some(ch) = &pen {
+        let _ = timed_write(&peripheral, ch, &[0x41, 0, 0, 0, 0, 0]).await;
+    }
 
     let info = read_device_info(&peripheral).await;
     spawn_led_listener(app, &peripheral, &keyboard).await;
@@ -448,6 +462,7 @@ pub async fn establish(
         peripheral,
         keyboard,
         mouse,
+        pen,
         info,
     })
 }

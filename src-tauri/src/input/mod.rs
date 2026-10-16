@@ -333,10 +333,13 @@ fn handle_event(shared: &InputShared, event: Event) -> Option<Event> {
             if !shared.is_locked() || !shared.pass_mouse.load(Ordering::SeqCst) {
                 return Some(event);
             }
+            if platform::pass_anchor_move(*x, *y) {
+                return Some(event);
+            }
             // `relative_delta` normalises per platform: on macOS `x`/`y` are
             // already HID deltas (vendored rdev patch); on Windows they're the
-            // absolute cursor point, which it converts to a delta + recentres
-            // the frozen cursor (see `platform`). Accumulate into the shared
+            // absolute cursor point measured from the frozen anchor (or the
+            // preceding RDP point). Accumulate into the shared
             // atomics; the writer drains them on its flush tick (§6.3).
             let (dx, dy) = platform::relative_delta(*x, *y);
             if dx != 0 {

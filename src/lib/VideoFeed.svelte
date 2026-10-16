@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { commands } from "./ipc";
+  import { videoPoint, PointerQueue } from "./absolutePointer";
 
   // `onpick` fires when the operator clicks the screen (to grab input).
   // `devices` / `selectedId` are bindable so the parent can render the capture
@@ -8,11 +10,15 @@
   let {
     onpick,
     locked = false,
+    absolute = false,
+    onerror,
     devices = $bindable([]),
     selectedId = $bindable(""),
   }: {
     onpick?: () => void;
     locked?: boolean;
+    absolute?: boolean;
+    onerror?: (message: string) => void;
     devices?: MediaDeviceInfo[];
     selectedId?: string;
   } = $props();
@@ -22,6 +28,46 @@
   let stream: MediaStream | null = null;
   // deviceId currently streaming — guards the $effect against redundant restarts.
   let activeId = "";
+  let contact = false;
+  let position = { x: 0, y: 0 };
+  let pointerFlags = 1;
+  const pointerQueue = new PointerQueue(
+    (report) => commands.absolutePointer(report.x, report.y, report.flags, report.wheel),
+    (failure) => {
+      releasePointer();
+      onerror?.(String(failure));
+    },
+  );
+
+  function releasePointer() {
+    if (!contact) return;
+    contact = false;
+    pointerFlags = 1;
+    pointerQueue.release({ ...position, flags: 0, wheel: 0 });
+  }
+
+  function sendPointer(event: PointerEvent | WheelEvent, motion = false, wheel = 0) {
+    if (!absolute || locked || !videoEl || error) return;
+    const point = videoPoint(event.clientX, event.clientY, videoEl.getBoundingClientRect(),
+      videoEl.videoWidth, videoEl.videoHeight);
+    if (!point) {
+      releasePointer();
+      return;
+    }
+    position = point;
+    contact = true;
+    pointerFlags = 1 | ((event.buttons & 1) ? 2 : 0) | ((event.buttons & 2) ? 4 : 0);
+    pointerQueue.enqueue({ ...point, flags: pointerFlags, wheel }, motion);
+    event.preventDefault();
+  }
+
+  function scrollPointer(event: WheelEvent) {
+    if (event.deltaY) sendPointer(event, false, event.deltaY < 0 ? 1 : -1);
+  }
+
+  $effect(() => {
+    if (!absolute || locked) releasePointer();
+  });
 
   async function refreshDevices() {
     const all = await navigator.mediaDevices.enumerateDevices();
@@ -82,6 +128,7 @@
   }
 
   function stopStream() {
+    releasePointer();
     stream?.getTracks().forEach((t) => t.stop());
     stream = null;
     if (videoEl) videoEl.srcObject = null;
@@ -118,7 +165,16 @@
   });
 </script>
 
-<div class="video-wrap" class:locked onclick={onpick} role="presentation">
+<svelte:window onblur={releasePointer} />
+
+<div class="video-wrap" class:locked
+  onclick={() => { if (!absolute) onpick?.(); }}
+  onpointermove={(event) => sendPointer(event, true)}
+  onpointerdown={(event) => sendPointer(event)}
+  onpointerup={(event) => sendPointer(event)}
+  onpointerleave={releasePointer} onpointercancel={releasePointer}
+  oncontextmenu={(event) => { if (absolute) event.preventDefault(); }}
+  onwheel={scrollPointer} role="presentation">
   <!-- svelte-ignore a11y_media_has_caption -->
   <video bind:this={videoEl} autoplay playsinline muted></video>
 

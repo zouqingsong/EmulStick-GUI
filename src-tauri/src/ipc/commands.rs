@@ -177,6 +177,21 @@ pub async fn debug_send_mouse(state: State<'_, AppState>, report: Vec<u8>) -> Re
     state.conn.write_mouse(&report).await
 }
 
+#[tauri::command]
+pub async fn absolute_pointer(
+    state: State<'_, AppState>, x: u16, y: u16, flags: u8, wheel: i8,
+) -> Result<(), String> {
+    if flags != 0 && state.input_shared.is_locked() {
+        return Err("Unlock relative capture before using absolute pointer".into());
+    }
+    let report = crate::protocol::absolute_report(x, y, flags)?;
+    state.conn.write_absolute(&report).await?;
+    if wheel != 0 {
+        state.conn.write_mouse(&crate::protocol::encode_report(0, 0, 0, wheel as i32)).await?;
+    }
+    Ok(())
+}
+
 /// Debug: press then release a single HID usage id, so the UI can "type" a key
 /// without constructing reports (M1).
 #[tauri::command]

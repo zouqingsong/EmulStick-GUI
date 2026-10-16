@@ -40,6 +40,8 @@ export const commands = {
   debugSendMouse: (report: number[]) =>
     invoke<void>("debug_send_mouse", { report }),
   debugTapKey: (usage: number) => invoke<void>("debug_tap_key", { usage }),
+  absolutePointer: (x: number, y: number, flags: number, wheel = 0) =>
+    invoke<void>("absolute_pointer", { x, y, flags, wheel }),
 };
 
 export const events = {

@@ -40,6 +40,7 @@
   // render the picker; VideoFeed drives the actual stream via these binds.
   let videoDevices = $state<MediaDeviceInfo[]>([]);
   let videoSelectedId = $state("");
+  let absolutePointer = $state(false);
 
   // While grabbed in screen mode the toolbar hides for a clean view; a brief
   // "Ctrl+Alt to release" reminder fades in on grab so the exit is never hidden.
@@ -383,7 +384,9 @@
 {#if view === "kvm"}
   <!-- ── PiKVM-style screen mode ──────────────────────────────────────── -->
   <div class="kvm">
-    <VideoFeed bind:devices={videoDevices} bind:selectedId={videoSelectedId} onpick={grabFromScreen} {locked} />
+    <VideoFeed bind:devices={videoDevices} bind:selectedId={videoSelectedId} onpick={grabFromScreen} {locked}
+      absolute={absolutePointer && connected && passthrough.mouse}
+      onerror={(message) => { absolutePointer = false; lastError = message; }} />
 
     <div class="kvm-bar" class:hidden={barHidden}>
       <button class="kvm-btn" onclick={exitKvm} title="Back to compact">‹ Back</button>
@@ -393,6 +396,13 @@
       </span>
 
       <div class="spacer"></div>
+
+      <select class="kvm-source" aria-label="Pointer mode" title="Absolute mode uses the experimental F804 pen channel" disabled={locked}
+        value={absolutePointer ? "absolute" : "relative"}
+        onchange={(event) => (absolutePointer = event.currentTarget.value === "absolute")}>
+        <option value="relative">Relative lock</option>
+        <option value="absolute">Absolute pointer (experimental)</option>
+      </select>
 
       {#if videoDevices.length > 1}
         <select class="kvm-source" value={videoSelectedId} onchange={(e) => pickVideoSource((e.currentTarget as HTMLSelectElement).value)} title="HDMI capture source" aria-label="Capture source">
@@ -409,7 +419,7 @@
       <button
         class="kvm-grab"
         class:locked
-        disabled={!locked && !canGrab}
+        disabled={!locked && (!canGrab || absolutePointer)}
         title={!locked && !canGrab ? "Enable Keyboard or Mouse first" : ""}
         onclick={toggleLock}
       >
@@ -432,7 +442,7 @@
       </div>
     {:else if !locked && !canGrab}
       <div class="kvm-hint">Enable Keyboard or Mouse to capture input</div>
-    {:else if !locked}
+    {:else if !locked && !absolutePointer}
       <div class="kvm-hint">Click the screen to lock keyboard &amp; mouse · {hotkey} to unlock</div>
     {:else if showReleaseHint}
       <div class="kvm-hint release-hint" transition:fade={{ duration: 400 }}>🔒 {hotkey} to unlock</div>
