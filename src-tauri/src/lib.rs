@@ -54,6 +54,9 @@ pub fn run() {
             ipc::commands::debug_send_keyboard,
             ipc::commands::debug_send_mouse,
             ipc::commands::absolute_pointer,
+            ipc::commands::set_absolute_mouse,
+            ipc::commands::panel_keyboard,
+            ipc::commands::release_panel_keyboard,
             ipc::commands::debug_tap_key,
         ])
         .build(tauri::generate_context!())
@@ -67,10 +70,14 @@ pub fn run() {
         if let RunEvent::ExitRequested { .. } = event {
             input::release_cursor_capture();
             let state = app_handle.state::<AppState>();
+            state.panel_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             tauri::async_runtime::block_on(async {
                 let _ = tokio::time::timeout(
                     EXIT_TEARDOWN_TIMEOUT,
-                    input::shutdown(&state),
+                    async {
+                        let _ = state.conn.release_panel_keyboard().await;
+                        input::shutdown(&state).await;
+                    },
                 )
                 .await;
             });

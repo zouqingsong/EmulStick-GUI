@@ -3,6 +3,7 @@
 //! commands.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -37,6 +38,7 @@ pub struct AppState {
     pub passthrough: Mutex<PassthroughFlags>,
     pub input_shared: Arc<InputShared>,
     pub input_ctl: Mutex<InputController>,
+    pub panel_generation: AtomicU64,
 }
 
 impl AppState {
@@ -50,6 +52,7 @@ impl AppState {
             passthrough: Mutex::new(PassthroughFlags::default()),
             input_shared,
             input_ctl,
+            panel_generation: AtomicU64::new(0),
         }
     }
 

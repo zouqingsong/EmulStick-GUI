@@ -66,6 +66,7 @@ pub struct InputShared {
     lock_active: AtomicBool,
     pass_keyboard: AtomicBool,
     pass_mouse: AtomicBool,
+    absolute_mouse: AtomicBool,
 
     /// OS of the **target system** being controlled. Forwarded keys swap Alt↔Win
     /// (Alt → ⌘, Win → ⌥; Ctrl stays Control) when this differs from the host OS,
@@ -107,6 +108,7 @@ impl InputShared {
             lock_active: AtomicBool::new(false),
             pass_keyboard: AtomicBool::new(false),
             pass_mouse: AtomicBool::new(false),
+            absolute_mouse: AtomicBool::new(false),
             target_mac: AtomicBool::new(false),
             keyboard: Mutex::new(KeyboardState::new()),
             buttons: AtomicU8::new(0),
@@ -139,6 +141,18 @@ impl InputShared {
     pub fn set_passthrough(&self, keyboard: bool, mouse: bool) {
         self.pass_keyboard.store(keyboard, Ordering::SeqCst);
         self.pass_mouse.store(mouse, Ordering::SeqCst);
+    }
+
+    pub fn set_absolute_mouse(&self, absolute: bool) {
+        self.absolute_mouse.store(absolute, Ordering::SeqCst);
+    }
+
+    pub fn absolute_mouse_enabled(&self) -> bool {
+        self.absolute_mouse.load(Ordering::SeqCst)
+    }
+
+    pub fn captures_relative_mouse(&self) -> bool {
+        self.pass_mouse.load(Ordering::SeqCst) && !self.absolute_mouse_enabled()
     }
 
     /// Select the **target system**'s OS for modifier remapping. The Alt↔Win swap
@@ -316,7 +330,7 @@ fn handle_event(shared: &InputShared, event: Event) -> Option<Event> {
         }
 
         EventType::ButtonPress(button) | EventType::ButtonRelease(button) => {
-            if !shared.is_locked() || !shared.pass_mouse.load(Ordering::SeqCst) {
+            if !shared.is_locked() || !shared.captures_relative_mouse() {
                 return Some(event);
             }
             let pressed = matches!(event.event_type, EventType::ButtonPress(_));
@@ -330,7 +344,7 @@ fn handle_event(shared: &InputShared, event: Event) -> Option<Event> {
         }
 
         EventType::MouseMove { x, y } => {
-            if !shared.is_locked() || !shared.pass_mouse.load(Ordering::SeqCst) {
+            if !shared.is_locked() || !shared.captures_relative_mouse() {
                 return Some(event);
             }
             if platform::pass_anchor_move(*x, *y) {
@@ -352,7 +366,7 @@ fn handle_event(shared: &InputShared, event: Event) -> Option<Event> {
         }
 
         EventType::Wheel { delta_x: _, delta_y } => {
-            if !shared.is_locked() || !shared.pass_mouse.load(Ordering::SeqCst) {
+            if !shared.is_locked() || !shared.captures_relative_mouse() {
                 return Some(event);
             }
             // Horizontal scroll (`delta_x`) is intentionally dropped: the F803
@@ -544,9 +558,11 @@ async fn set_lock(app: &AppHandle, state: &AppState, active: bool, buttons: &mut
 
     if active {
         shared.lock_active.store(true, Ordering::SeqCst);
+        state.panel_generation.fetch_add(1, Ordering::SeqCst);
+        let _ = state.conn.release_panel_keyboard().await;
         // Freeze + decouple the cursor so movement is captured relatively
         // (only when we're actually grabbing the mouse channel).
-        if shared.pass_mouse.load(Ordering::SeqCst) {
+        if shared.captures_relative_mouse() {
             platform::set_cursor_capture(true);
         }
         // Windows: drop our window out of the foreground so WebView2 doesn't
@@ -563,6 +579,9 @@ async fn set_lock(app: &AppHandle, state: &AppState, active: bool, buttons: &mut
         *buttons = 0;
         write_keyboard(state, &KEYBOARD_RELEASE_ALL).await;
         write_mouse(state, &MOUSE_RELEASE_ALL).await;
+        if shared.absolute_mouse_enabled() {
+            let _ = state.conn.write_absolute(&[0x41, 0, 0, 0, 0, 0]).await;
+        }
     }
 
     events::lock_state(app, active);
@@ -572,7 +591,7 @@ async fn set_lock(app: &AppHandle, state: &AppState, active: bool, buttons: &mut
 /// already locked.
 fn refresh_cursor_capture(shared: &InputShared, mouse: bool) {
     if shared.is_locked() {
-        platform::set_cursor_capture(mouse);
+        platform::set_cursor_capture(mouse && !shared.absolute_mouse_enabled());
     }
 }
 
@@ -770,6 +789,63 @@ fn reset_input_state(state: &AppState, buttons: &mut u8) {
 mod tests {
     use super::remap_for_target_os;
     use rdev::Key;
+
+    #[test]
+    fn absolute_mouse_remains_transparent_during_keyboard_lock() {
+        use super::{handle_event, InputShared};
+        use rdev::{Button, Event, EventType};
+        let shared = InputShared::new();
+        shared.set_passthrough(true, true);
+        shared.set_absolute_mouse(true);
+        shared.set_locked(true);
+        assert!(!shared.captures_relative_mouse());
+        for event_type in [
+            EventType::MouseMove { x: 100.0, y: 200.0 },
+            EventType::ButtonPress(Button::Left),
+            EventType::ButtonRelease(Button::Left),
+            EventType::Wheel { delta_x: 0, delta_y: 1 },
+        ] {
+            assert!(handle_event(&shared, Event { event_type, time: std::time::SystemTime::now(), name: None }).is_some());
+        }
+        assert!(handle_event(&shared, Event {
+            event_type: EventType::KeyPress(Key::KeyA),
+            time: std::time::SystemTime::now(), name: None,
+        }).is_none());
+        assert_eq!(shared.keyboard.lock().unwrap().report()[2], 4);
+        assert!(handle_event(&shared, Event {
+            event_type: EventType::KeyRelease(Key::KeyA),
+            time: std::time::SystemTime::now(), name: None,
+        }).is_none());
+        assert_eq!(shared.keyboard.lock().unwrap().report(), super::KEYBOARD_RELEASE_ALL);
+    }
+
+    #[test]
+    fn ctrl_alt_requests_unlock_with_absolute_mouse() {
+        let shared = super::InputShared::new();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        assert!(shared.tx.set(sender).is_ok());
+        shared.set_passthrough(true, true);
+        shared.set_absolute_mouse(true);
+        shared.set_locked(true);
+        assert!(!super::track_hotkey(&shared, &Key::ControlLeft, true));
+        assert!(super::track_hotkey(&shared, &Key::Alt, true));
+        assert!(matches!(receiver.try_recv(), Ok(super::InputMsg::SetLock(false))));
+        assert!(!super::track_hotkey(&shared, &Key::Alt, true));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn relative_mouse_capture_is_restored_after_absolute_mode() {
+        let shared = super::InputShared::new();
+        shared.set_passthrough(true, true);
+        assert!(shared.captures_relative_mouse());
+        shared.set_absolute_mouse(true);
+        assert!(!shared.captures_relative_mouse());
+        shared.set_absolute_mouse(false);
+        assert!(shared.captures_relative_mouse());
+        shared.set_passthrough(true, false);
+        assert!(!shared.captures_relative_mouse());
+    }
 
     // Host and target on the same OS ⇒ no remap (PC→PC and Mac→Mac alike).
     #[test]

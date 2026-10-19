@@ -6,6 +6,7 @@
   import { load, type Store } from "@tauri-apps/plugin-store";
   import { commands, events } from "./lib/ipc";
   import VideoFeed from "./lib/VideoFeed.svelte";
+  import KeyboardPanel from "./lib/KeyboardPanel.svelte";
   import type {
     ConnectionState,
     DeviceInfo,
@@ -41,6 +42,7 @@
   let videoDevices = $state<MediaDeviceInfo[]>([]);
   let videoSelectedId = $state("");
   let absolutePointer = $state(false);
+  let keyboardExpanded = $state(false);
 
   // While grabbed in screen mode the toolbar hides for a clean view; a brief
   // "Ctrl+Alt to release" reminder fades in on grab so the exit is never hidden.
@@ -53,6 +55,7 @@
   // Locking with neither channel enabled captures nothing — block it. (Exiting
   // lock must always stay allowed, so this only gates *entering*.)
   const canGrab = $derived(passthrough.keyboard || passthrough.mouse);
+  const canLock = $derived(absolutePointer ? passthrough.keyboard : canGrab);
 
   // The lock/escape hotkey is Ctrl+Alt; on a Mac keyboard those keys are
   // labelled Control + Option, so show platform-native names.
@@ -236,7 +239,14 @@
       return;
     }
     needsAccessibility = false;
+    await commands.setAbsoluteMouse(absolutePointer);
     await commands.enterLock();
+  }
+
+  async function setPointerMode(absolute: boolean) {
+    const previous = absolutePointer;
+    absolutePointer = absolute;
+    if (!(await run(() => commands.setAbsoluteMouse(absolute)))) absolutePointer = previous;
   }
 
   const toggleLock = () => run(locked ? commands.exitLock : beginLock);
@@ -351,7 +361,7 @@
   // away after a short linger (not the instant you grab). On release, both
   // revert immediately so the bar snaps back.
   $effect(() => {
-    if (!locked) {
+    if (!locked || absolutePointer) {
       showReleaseHint = false;
       barHidden = false;
       return;
@@ -384,22 +394,23 @@
 {#if view === "kvm"}
   <!-- ── PiKVM-style screen mode ──────────────────────────────────────── -->
   <div class="kvm">
-    <VideoFeed bind:devices={videoDevices} bind:selectedId={videoSelectedId} onpick={grabFromScreen} {locked}
+    <div class="kvm-video">
+    <VideoFeed bind:devices={videoDevices} bind:selectedId={videoSelectedId} onpick={grabFromScreen} locked={locked && !absolutePointer}
       absolute={absolutePointer && connected && passthrough.mouse}
-      onerror={(message) => { absolutePointer = false; lastError = message; }} />
+      onerror={(message) => (lastError = message)} />
 
     <div class="kvm-bar" class:hidden={barHidden}>
       <button class="kvm-btn" onclick={exitKvm} title="Back to compact">‹ Back</button>
       <span class="kvm-status" class:connected class:locked class:reconnecting>
         <span class="dot"></span>
-        {locked ? "Locked" : reconnecting ? "Reconnecting…" : connection}
+        {locked ? (absolutePointer ? "Keyboard locked" : "Locked") : reconnecting ? "Reconnecting…" : connection}
       </span>
 
       <div class="spacer"></div>
 
       <select class="kvm-source" aria-label="Pointer mode" title="Absolute mode uses the experimental F804 pen channel" disabled={locked}
         value={absolutePointer ? "absolute" : "relative"}
-        onchange={(event) => (absolutePointer = event.currentTarget.value === "absolute")}>
+        onchange={(event) => setPointerMode(event.currentTarget.value === "absolute")}>
         <option value="relative">Relative lock</option>
         <option value="absolute">Absolute pointer (experimental)</option>
       </select>
@@ -419,11 +430,11 @@
       <button
         class="kvm-grab"
         class:locked
-        disabled={!locked && (!canGrab || absolutePointer)}
-        title={!locked && !canGrab ? "Enable Keyboard or Mouse first" : ""}
+        disabled={!locked && !canLock}
+        title={absolutePointer ? `Capture keyboard only; ${hotkey} to release` : !locked && !canGrab ? "Enable Keyboard or Mouse first" : ""}
         onclick={toggleLock}
       >
-        {locked ? "Unlock" : "Lock"}
+        {locked ? "Unlock" : absolutePointer ? "Lock keyboard" : "Lock"}
       </button>
     </div>
 
@@ -447,6 +458,9 @@
     {:else if showReleaseHint}
       <div class="kvm-hint release-hint" transition:fade={{ duration: 400 }}>🔒 {hotkey} to unlock</div>
     {/if}
+    </div>
+    <KeyboardPanel bind:expanded={keyboardExpanded} enabled={connected && passthrough.keyboard && !locked}
+      onerror={(message) => (lastError = message)} />
   </div>
 {:else}
   <!-- ── Compact mode ─────────────────────────────────────────────────── -->
@@ -549,14 +563,16 @@
       <button
         class="lock-btn"
         class:locked
-        disabled={!locked && !canGrab}
-        title={!locked && !canGrab ? "Enable Keyboard or Mouse first" : ""}
+        disabled={!locked && !canLock}
+        title={!locked && !canLock ? "Enable Keyboard to lock" : ""}
         onclick={toggleLock}
       >
-        {locked ? `🔒 Exit lock · ${hotkey}` : !canGrab ? "Enable a channel to lock" : "🔓 Enter lock"}
+        {locked ? `🔒 Exit lock · ${hotkey}` : !canLock ? "Enable a channel to lock" : absolutePointer ? "Lock keyboard" : "🔓 Enter lock"}
       </button>
 
       <button class="screen-btn" onclick={enterKvm}>🖥️ Open screen</button>
+      <KeyboardPanel bind:expanded={keyboardExpanded} enabled={connected && passthrough.keyboard && !locked}
+        onerror={(message) => (lastError = message)} />
       <button class="screen-btn disconnect" onclick={disconnect}>🔌 Disconnect</button>
     {/if}
   </main>

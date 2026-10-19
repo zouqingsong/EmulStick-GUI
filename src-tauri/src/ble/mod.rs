@@ -69,6 +69,7 @@ pub struct ConnectedDevice {
     keyboard: Characteristic,
     mouse: Characteristic,
     pen: Option<Characteristic>,
+    panel_keyboard: tokio::sync::Mutex<()>,
     info: DeviceInfo,
 }
 
@@ -171,6 +172,38 @@ impl ConnHandle {
         let dev = self.current().ok_or("Not connected")?;
         let pen = dev.pen.as_ref().ok_or("Absolute pointer channel F804 not available")?;
         dev.timed_write(pen, report).await
+    }
+
+    pub async fn write_panel_keyboard(
+        &self, reports: &[[u8; 8]], release_after: bool, cancelled: impl Fn() -> bool,
+    ) -> Result<(), String> {
+        let dev = self.current().ok_or("Not connected")?;
+        let _guard = dev.panel_keyboard.lock().await;
+        let mut result = Ok(());
+        for report in reports {
+            if cancelled() {
+                result = Err("Keyboard input cancelled".into());
+                break;
+            }
+            if let Err(error) = dev.write_keyboard(report).await {
+                result = Err(error);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        if release_after || result.is_err() {
+            let release = dev.write_keyboard(&KEYBOARD_RELEASE_ALL).await;
+            if result.is_ok() {
+                result = release;
+            }
+        }
+        result
+    }
+
+    pub async fn release_panel_keyboard(&self) -> Result<(), String> {
+        let Some(dev) = self.current() else { return Ok(()) };
+        let _guard = dev.panel_keyboard.lock().await;
+        dev.write_keyboard(&KEYBOARD_RELEASE_ALL).await
     }
 
     /// Best-effort release-all on the active connection (no-op if disconnected).
@@ -463,6 +496,7 @@ pub async fn establish(
         keyboard,
         mouse,
         pen,
+        panel_keyboard: tokio::sync::Mutex::new(()),
         info,
     })
 }

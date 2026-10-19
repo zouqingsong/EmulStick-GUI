@@ -54,6 +54,8 @@ pub async fn connect(
 
 #[tauri::command]
 pub async fn disconnect(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    state.panel_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let _ = state.conn.release_panel_keyboard().await;
     state.ble.lock().await.disconnect(&app).await
 }
 
@@ -107,6 +109,9 @@ pub async fn enter_lock(app: AppHandle, state: State<'_, AppState>) -> Result<()
     state.input_ctl.lock().await.ensure_started(&app);
     // Make sure the callback sees the current passthrough flags immediately.
     let flags = *state.passthrough.lock().await;
+    if state.input_shared.absolute_mouse_enabled() && !flags.keyboard {
+        return Err("Enable Keyboard to use keyboard-only lock".into());
+    }
     state.input_shared.set_passthrough(flags.keyboard, flags.mouse);
     state.input_shared.request_lock(true);
     Ok(())
@@ -178,10 +183,22 @@ pub async fn debug_send_mouse(state: State<'_, AppState>, report: Vec<u8>) -> Re
 }
 
 #[tauri::command]
+pub async fn set_absolute_mouse(state: State<'_, AppState>, absolute: bool) -> Result<(), String> {
+    if state.is_locked() {
+        return Err("Unlock before changing pointer mode".into());
+    }
+    state.input_shared.set_absolute_mouse(absolute);
+    if !absolute {
+        let _ = state.conn.write_absolute(&[0x41, 0, 0, 0, 0, 0]).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn absolute_pointer(
     state: State<'_, AppState>, x: u16, y: u16, flags: u8, wheel: i8,
 ) -> Result<(), String> {
-    if flags != 0 && state.input_shared.is_locked() {
+    if flags != 0 && state.input_shared.is_locked() && !state.input_shared.absolute_mouse_enabled() {
         return Err("Unlock relative capture before using absolute pointer".into());
     }
     let report = crate::protocol::absolute_report(x, y, flags)?;
@@ -202,4 +219,35 @@ pub async fn debug_tap_key(state: State<'_, AppState>, usage: u8) -> Result<(), 
     state.conn.write_keyboard(&kb.report()).await?;
     kb.release_key(usage);
     state.conn.write_keyboard(&kb.report()).await
+}
+
+#[tauri::command]
+pub async fn panel_keyboard(
+    state: State<'_, AppState>, modifiers: u8, keys: Vec<u8>,
+    text: Option<String>, enter: bool, tap: bool,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    use crate::protocol::keyboard::{panel_report, text_reports};
+
+    if state.is_locked() || !state.passthrough.lock().await.keyboard {
+        return Err("Enable Keyboard and unlock global capture first".into());
+    }
+    let generation = state.panel_generation.load(Ordering::SeqCst);
+    let reports = if let Some(text) = &text {
+        text_reports(text, enter)?
+    } else {
+        vec![panel_report(modifiers, &keys)?]
+    };
+    state.conn.write_panel_keyboard(&reports, tap || text.is_some(), || {
+        state.is_locked() || state.panel_generation.load(Ordering::SeqCst) != generation
+    }).await
+}
+
+#[tauri::command]
+pub async fn release_panel_keyboard(state: State<'_, AppState>) -> Result<(), String> {
+    state.panel_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if state.is_locked() {
+        return Ok(());
+    }
+    state.conn.release_panel_keyboard().await
 }

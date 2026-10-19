@@ -66,6 +66,11 @@ main.compact {
   gap: 12px;
 }
 
+main.compact:has(.keyboard-panel[open]) {
+  max-height: 100vh;
+  overflow-y: auto;
+}
+
 header {
   display: flex;
   align-items: center;
@@ -410,6 +415,13 @@ dl.info dd {
   position: fixed;
   inset: 0;
   background: #000;
+  display: flex;
+  flex-direction: column;
+}
+.kvm-video {
+  position: relative;
+  flex: 1;
+  min-height: 0;
 }
 .kvm-bar {
   position: absolute;

@@ -28,6 +28,7 @@ export const commands = {
    *  differs from the host OS). */
   setTargetOs: (mac: boolean) => invoke<void>("set_target_os", { mac }),
   enterLock: () => invoke<void>("enter_lock"),
+  setAbsoluteMouse: (absolute: boolean) => invoke<void>("set_absolute_mouse", { absolute }),
   exitLock: () => invoke<void>("exit_lock"),
   /** Whether the OS trusts us to capture global input (macOS Accessibility).
    *  Pass `prompt: true` to trigger macOS's grant dialog when not yet trusted. */
@@ -42,6 +43,9 @@ export const commands = {
   debugTapKey: (usage: number) => invoke<void>("debug_tap_key", { usage }),
   absolutePointer: (x: number, y: number, flags: number, wheel = 0) =>
     invoke<void>("absolute_pointer", { x, y, flags, wheel }),
+  panelKeyboard: (modifiers: number, keys: number[], tap = false, text: string | null = null, enter = false) =>
+    invoke<void>("panel_keyboard", { modifiers, keys, tap, text, enter }),
+  releasePanelKeyboard: () => invoke<void>("release_panel_keyboard"),
 };
 
 export const events = {

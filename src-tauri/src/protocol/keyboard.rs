@@ -113,10 +113,83 @@ impl KeyboardState {
 /// key is left stuck pressed on the host (plan §9).
 pub const KEYBOARD_RELEASE_ALL: [u8; KEYBOARD_REPORT_LEN] = [0u8; KEYBOARD_REPORT_LEN];
 
+pub fn panel_report(modifiers: u8, keys: &[u8]) -> Result<[u8; 8], String> {
+    if keys.len() > MAX_KEYS || keys.iter().any(|key| !(4..=106).contains(key)) {
+        return Err("Use at most six keys with HID usage IDs 4..106".into());
+    }
+    let mut state = KeyboardState::new();
+    state.set_modifier(modifiers, true);
+    for &key in keys {
+        state.press_key(key);
+    }
+    Ok(state.report())
+}
+
+pub fn text_reports(text: &str, enter: bool) -> Result<Vec<[u8; 8]>, String> {
+    if text.len() > 4096 {
+        return Err("Text is limited to 4096 bytes per send".into());
+    }
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let plain = b"1234567890-=[]\\;'`,./";
+    let shifted = b"!@#$%^&*()_+{}|:\"~<>?";
+    let usages = [30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 45, 46, 47, 48, 49, 51, 52, 53, 54, 55, 56];
+    let mut reports = Vec::new();
+    for character in normalized.chars().chain(enter.then_some('\n')) {
+        let (modifiers, usage) = match character {
+            'a'..='z' => (0, character as u8 - b'a' + 4),
+            'A'..='Z' => (modifier::LEFT_SHIFT, character as u8 - b'A' + 4),
+            ' ' => (0, 44),
+            '\n' => (0, 40),
+            '\t' => (0, 43),
+            character if character.is_ascii() => {
+                let byte = character as u8;
+                if let Some(index) = plain.iter().position(|&value| value == byte) {
+                    (0, usages[index])
+                } else if let Some(index) = shifted.iter().position(|&value| value == byte) {
+                    (modifier::LEFT_SHIFT, usages[index])
+                } else {
+                    return Err(format!("Unsupported US-layout character: {character:?}"));
+                }
+            }
+            character => return Err(format!("Unsupported US-layout character: {character:?}")),
+        };
+        reports.push(panel_report(modifiers, &[usage])?);
+        reports.push(KEYBOARD_RELEASE_ALL);
+    }
+    Ok(reports)
+}
+
 #[cfg(test)]
 mod tests {
     use super::modifier::*;
     use super::*;
+
+    #[test]
+    fn panel_text_us_layout_and_releases() {
+        let reports = text_reports("aA!?0", true).unwrap();
+        assert_eq!(reports.len(), 12);
+        for (index, (modifier, usage)) in [(0, 4), (2, 4), (2, 30), (2, 56), (0, 39), (0, 40)].into_iter().enumerate() {
+            assert_eq!(reports[index * 2], panel_report(modifier, &[usage]).unwrap());
+            assert_eq!(reports[index * 2 + 1], KEYBOARD_RELEASE_ALL);
+        }
+    }
+
+    #[test]
+    fn panel_text_validates_before_sending() {
+        assert!(text_reports("valid then \u{00e9}", false).is_err());
+        assert!(text_reports("\0", false).is_err());
+        assert!(text_reports(&"x".repeat(4097), false).is_err());
+        assert!(panel_report(0, &[4; 7]).is_err());
+        assert!(panel_report(0, &[107]).is_err());
+    }
+
+    #[test]
+    fn panel_text_normalizes_newlines() {
+        assert_eq!(text_reports("\r\n\r\n", false).unwrap(), text_reports("\n\n", false).unwrap());
+        assert!(text_reports("", false).unwrap().is_empty());
+        assert_eq!(text_reports("\t", false).unwrap()[0][2], 43);
+        assert_eq!(text_reports("\r", false).unwrap()[0][2], 40);
+    }
 
     /// docs/protocol.md Example 1.1 — Win+Shift+S (Win10 screenshot), using the
     /// *right* Win and *right* Shift keys exactly as documented.
