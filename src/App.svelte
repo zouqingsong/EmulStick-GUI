@@ -393,7 +393,7 @@
 
 {#if view === "kvm"}
   <!-- ── PiKVM-style screen mode ──────────────────────────────────────── -->
-  <div class="kvm">
+  <div class="kvm" class:docked={absolutePointer}>
     <div class="kvm-video">
     <VideoFeed bind:devices={videoDevices} bind:selectedId={videoSelectedId} onpick={grabFromScreen} locked={locked && !absolutePointer}
       absolute={absolutePointer && connected && passthrough.mouse}

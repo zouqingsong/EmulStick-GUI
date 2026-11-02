@@ -447,6 +447,14 @@ dl.info dd {
 .kvm-bar .spacer {
   flex: 1;
 }
+/* Absolute pointer: keep the bar off the video so every target pixel stays clickable. */
+.kvm.docked .kvm-bar {
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.kvm.docked .video-wrap {
+  top: 52px;
+}
 
 /* Slim translucent controls (shared chrome) */
 .kvm-btn,
