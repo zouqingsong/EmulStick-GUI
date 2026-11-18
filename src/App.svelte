@@ -43,12 +43,19 @@
   let videoSelectedId = $state("");
   let absolutePointer = $state(false);
   let keyboardExpanded = $state(false);
+  let fullscreen = $state(false);
 
   // While grabbed in screen mode the toolbar hides for a clean view; a brief
   // "Ctrl+Alt to release" reminder fades in on grab so the exit is never hidden.
   let showReleaseHint = $state(false);
   // The toolbar lingers briefly after grabbing, then slides away (not abruptly).
-  let barHidden = $state(false);
+  let lockHidden = $state(false);
+  // Outside relative lock the toolbar is shown/hidden only via the draggable handle.
+  let barCollapsed = $state(false);
+  let handlePos = $state({ x: 0.5, y: 0 });
+  let handleDrag: { id: number; x: number; y: number; moved: boolean } | null = null;
+  let suppressHandleClick = false;
+  const relativeLocked = $derived(locked && !absolutePointer);
 
   const connected = $derived(connection === "Connected");
   const deviceName = $derived(savedDevice?.name ?? info?.model ?? "EmulStick");
@@ -117,7 +124,20 @@
     const onFocus = () => {
       if (needsAccessibility) recheckAccessibility();
     };
+    const onWindowKeydown = (event: KeyboardEvent) => {
+      if (view !== "kvm") return;
+      const target = event.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+      if (event.key === "F11") {
+        event.preventDefault();
+        toggleFullscreen();
+      } else if (event.key === "Escape" && fullscreen && !locked) {
+        event.preventDefault();
+        setFullscreen(false);
+      }
+    };
     window.addEventListener("focus", onFocus);
+    window.addEventListener("keydown", onWindowKeydown);
 
     (async () => {
       store = await load("emulstick.json");
@@ -139,6 +159,7 @@
       // Restore the last HDMI capture source (VideoFeed falls back to the
       // default camera if it's no longer present).
       videoSelectedId = (await store.get<string>("videoSource")) ?? "";
+      handlePos = (await store.get<{ x: number; y: number }>("toolbarHandle")) ?? handlePos;
       const di = await commands.getDeviceInfo();
       if (di) {
         info = di;
@@ -151,6 +172,7 @@
     return () => {
       for (const u of unlisteners) u.then((fn) => fn());
       window.removeEventListener("focus", onFocus);
+      window.removeEventListener("keydown", onWindowKeydown);
     };
   });
 
@@ -314,16 +336,70 @@
     view = "kvm";
     try {
       const win = getCurrentWindow();
-      await win.setResizable(true);
-      await win.setSize(new LogicalSize(KVM.w, KVM.h));
-      await win.center();
+      fullscreen = await win.isFullscreen();
+      if (!fullscreen) {
+        await win.setResizable(true);
+        await win.setSize(new LogicalSize(KVM.w, KVM.h));
+        await win.center();
+      }
     } catch {
       /* ignore */
     }
   }
 
-  function exitKvm() {
+  async function setFullscreen(enabled: boolean) {
+    try {
+      await getCurrentWindow().setFullscreen(enabled);
+      fullscreen = enabled;
+      if (enabled) barCollapsed = true;
+    } catch (error) {
+      lastError = humanize(String(error));
+    }
+  }
+
+  async function toggleFullscreen() {
+    await setFullscreen(!fullscreen);
+  }
+
+  const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+  function handleDown(event: PointerEvent) {
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    handleDrag = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
+  }
+
+  function handleMove(event: PointerEvent) {
+    if (!handleDrag || handleDrag.id !== event.pointerId) return;
+    if (!handleDrag.moved && Math.hypot(event.clientX - handleDrag.x, event.clientY - handleDrag.y) < 5) return;
+    handleDrag.moved = true;
+    const host = (event.currentTarget as HTMLElement).parentElement!.getBoundingClientRect();
+    handlePos = {
+      x: clamp((event.clientX - host.left) / host.width, 0.02, 0.98),
+      y: clamp((event.clientY - host.top) / host.height, 0, 0.96),
+    };
+  }
+
+  async function handleUp(event: PointerEvent) {
+    if (!handleDrag || handleDrag.id !== event.pointerId) return;
+    const moved = handleDrag.moved;
+    handleDrag = null;
+    if (!moved) return;
+    suppressHandleClick = true;
+    await store?.set("toolbarHandle", handlePos);
+    await store?.save();
+  }
+
+  function handleClick() {
+    if (suppressHandleClick) {
+      suppressHandleClick = false;
+      return;
+    }
+    barCollapsed = !barCollapsed;
+  }
+
+  async function exitKvm() {
     if (view !== "kvm") return;
+    if (fullscreen) await setFullscreen(false);
     view = "compact"; // the effect below re-fits the compact window
   }
 
@@ -361,14 +437,14 @@
   // away after a short linger (not the instant you grab). On release, both
   // revert immediately so the bar snaps back.
   $effect(() => {
-    if (!locked || absolutePointer) {
+    if (!relativeLocked) {
       showReleaseHint = false;
-      barHidden = false;
+      lockHidden = false;
       return;
     }
     showReleaseHint = true;
     const hideHint = setTimeout(() => (showReleaseHint = false), 2600);
-    const hideBar = setTimeout(() => (barHidden = true), 1200);
+    const hideBar = setTimeout(() => (lockHidden = true), 1200);
     return () => {
       clearTimeout(hideHint);
       clearTimeout(hideBar);
@@ -393,14 +469,16 @@
 
 {#if view === "kvm"}
   <!-- ── PiKVM-style screen mode ──────────────────────────────────────── -->
-  <div class="kvm" class:docked={absolutePointer}>
+  <div class="kvm">
     <div class="kvm-video">
     <VideoFeed bind:devices={videoDevices} bind:selectedId={videoSelectedId} onpick={grabFromScreen} locked={locked && !absolutePointer}
       absolute={absolutePointer && connected && passthrough.mouse}
       onerror={(message) => (lastError = message)} />
 
-    <div class="kvm-bar" class:hidden={barHidden}>
+    <div class="kvm-bar" class:hidden={relativeLocked ? lockHidden : barCollapsed}>
       <button class="kvm-btn" onclick={exitKvm} title="Back to compact">‹ Back</button>
+      <button class="kvm-btn kvm-fullscreen" aria-label={fullscreen ? "Exit full screen" : "Enter full screen"}
+        title={`${fullscreen ? "Exit" : "Enter"} full screen (F11)`} onclick={toggleFullscreen}>⛶</button>
       <span class="kvm-status" class:connected class:locked class:reconnecting>
         <span class="dot"></span>
         {locked ? (absolutePointer ? "Keyboard locked" : "Locked") : reconnecting ? "Reconnecting…" : connection}
@@ -438,6 +516,14 @@
       </button>
     </div>
 
+    {#if !relativeLocked}
+      <button class="kvm-handle" style:left={`${handlePos.x * 100}%`} style:top={`${handlePos.y * 100}%`}
+        aria-label={barCollapsed ? "Show toolbar" : "Hide toolbar"} aria-expanded={!barCollapsed}
+        title="Click to show/hide toolbar · drag to move"
+        onpointerdown={handleDown} onpointermove={handleMove} onpointerup={handleUp}
+        onpointercancel={() => (handleDrag = null)} onclick={handleClick}>{barCollapsed ? "▾" : "▴"}</button>
+    {/if}
+
     {#if lastError}
       <div class="kvm-error" role="alert">
         <span>{lastError}</span>
@@ -459,8 +545,10 @@
       <div class="kvm-hint release-hint" transition:fade={{ duration: 400 }}>🔒 {hotkey} to unlock</div>
     {/if}
     </div>
-    <KeyboardPanel bind:expanded={keyboardExpanded} enabled={connected && passthrough.keyboard && !locked}
-      onerror={(message) => (lastError = message)} />
+    {#if !fullscreen}
+      <KeyboardPanel bind:expanded={keyboardExpanded} enabled={connected && passthrough.keyboard && !locked}
+        onerror={(message) => (lastError = message)} />
+    {/if}
   </div>
 {:else}
   <!-- ── Compact mode ─────────────────────────────────────────────────── -->

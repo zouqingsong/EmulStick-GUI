@@ -447,15 +447,27 @@ dl.info dd {
 .kvm-bar .spacer {
   flex: 1;
 }
-/* Absolute pointer: keep the bar off the video so every target pixel stays clickable. */
-.kvm.docked .kvm-bar {
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
+.kvm-handle {
+  position: absolute;
+  transform: translateX(-50%);
+  z-index: 3;
+  width: 44px;
+  height: 20px;
+  padding: 0;
+  border-radius: 8px;
+  background: rgba(20, 22, 28, 0.75);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1;
+  cursor: grab;
+  touch-action: none;
+  opacity: 0.55;
 }
-.kvm.docked .video-wrap {
-  top: 52px;
+.kvm-handle:hover,
+.kvm-handle:focus-visible {
+  opacity: 1;
 }
-
 /* Slim translucent controls (shared chrome) */
 .kvm-btn,
 .kvm-status,
