@@ -68,6 +68,8 @@
   // labelled Control + Option, so show platform-native names.
   const isMac = navigator.userAgent.includes("Mac");
   const hotkey = isMac ? "Control+Option" : "Ctrl+Alt";
+  // macOS reserves F11 (Show Desktop); its native full-screen shortcut is ⌃⌘F.
+  const fullscreenHotkey = isMac ? "⌃⌘F" : "F11";
 
   let store: Store | null = null;
   let intentional = false;
@@ -96,6 +98,15 @@
         if (active) needsAccessibility = false;
       }),
       events.onKeyboardLeds((l) => (leds = l)),
+      // Full screen can also be left via the OS (macOS green button / View
+      // menu), so mirror the real window state instead of trusting our flag.
+      getCurrentWindow().onResized(async () => {
+        try {
+          fullscreen = await getCurrentWindow().isFullscreen();
+        } catch {
+          /* window APIs unavailable outside Tauri */
+        }
+      }),
       events.onError((e) => {
         // The grab thread couldn't install the hook. On macOS that's almost
         // always a missing Accessibility grant, so route it to the onboarding
@@ -128,7 +139,9 @@
       if (view !== "kvm") return;
       const target = event.target;
       if (target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
-      if (event.key === "F11") {
+      const fullscreenCombo = event.key === "F11" ||
+        (isMac && event.ctrlKey && event.metaKey && !event.altKey && event.code === "KeyF");
+      if (fullscreenCombo) {
         event.preventDefault();
         toggleFullscreen();
       } else if (event.key === "Escape" && fullscreen && !locked) {
@@ -399,7 +412,18 @@
 
   async function exitKvm() {
     if (view !== "kvm") return;
-    if (fullscreen) await setFullscreen(false);
+    if (fullscreen) {
+      await setFullscreen(false);
+      // macOS animates out of its full-screen Space and ignores resizes until
+      // it finishes, so wait before the compact re-fit below.
+      try {
+        const win = getCurrentWindow();
+        for (let i = 0; i < 30 && (await win.isFullscreen()); i++) await sleep(50);
+        if (isMac) await sleep(300);
+      } catch {
+        /* ignore */
+      }
+    }
     view = "compact"; // the effect below re-fits the compact window
   }
 
@@ -478,7 +502,7 @@
     <div class="kvm-bar" class:hidden={relativeLocked ? lockHidden : barCollapsed}>
       <button class="kvm-btn" onclick={exitKvm} title="Back to compact">‹ Back</button>
       <button class="kvm-btn kvm-fullscreen" aria-label={fullscreen ? "Exit full screen" : "Enter full screen"}
-        title={`${fullscreen ? "Exit" : "Enter"} full screen (F11)`} onclick={toggleFullscreen}>⛶</button>
+        title={`${fullscreen ? "Exit" : "Enter"} full screen (${fullscreenHotkey})`} onclick={toggleFullscreen}>⛶</button>
       <span class="kvm-status" class:connected class:locked class:reconnecting>
         <span class="dot"></span>
         {locked ? (absolutePointer ? "Keyboard locked" : "Locked") : reconnecting ? "Reconnecting…" : connection}

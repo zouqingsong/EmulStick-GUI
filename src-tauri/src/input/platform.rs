@@ -18,6 +18,14 @@
 /// system cursor and decouple it from the physical mouse.
 #[cfg(target_os = "macos")]
 pub fn set_cursor_capture(capture: bool) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    // CGDisplayHideCursor/ShowCursor are reference-counted, so capture must be
+    // idempotent: enable can repeat (passthrough refresh while locked) and
+    // disable runs from many paths (lock exit, emergency unlock, exit/panic).
+    // Unbalanced calls would leave the operator's cursor hidden after unlock.
+    static CAPTURED: AtomicBool = AtomicBool::new(false);
+
     #[repr(C)]
     struct CGPoint {
         x: f64,
@@ -34,6 +42,9 @@ pub fn set_cursor_capture(capture: bool) {
         fn CGDisplayShowCursor(display: u32) -> i32;
     }
     unsafe {
+        if CAPTURED.swap(capture, Ordering::SeqCst) == capture {
+            return;
+        }
         let display = CGMainDisplayID();
         if capture {
             // Centre the cursor first so it isn't frozen against a screen edge,
