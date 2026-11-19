@@ -19,9 +19,12 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 pub const SERIAL_DATA: &str = "serial_data";
 pub const SERIAL_STATE: &str = "serial_state";
 
-/// Read poll timeout. (On Windows the shared handle ends up with WRITE_TIMEOUT
-/// instead; the reader flushes on an empty driver queue, not on timeout.)
+/// Read poll timeout (Unix). Windows doesn't block in `read` at all; see
+/// `wait_for_input`.
 const READ_TIMEOUT: Duration = Duration::from_millis(20);
+/// How often the Windows reader checks the driver's receive queue.
+#[cfg(windows)]
+const POLL_INTERVAL: Duration = Duration::from_millis(1);
 /// Flush a batch at least this often while data keeps streaming in.
 const BATCH_INTERVAL: Duration = Duration::from_millis(30);
 /// …or as soon as it grows this large.
@@ -194,6 +197,24 @@ fn reader_loop<R: Runtime>(app: AppHandle<R>, mut port: Box<dyn SerialPort>, nam
     };
 
     while !stop.load(Ordering::SeqCst) {
+        match wait_for_input(port.as_ref()) {
+            Ok(true) => {}
+            Ok(false) => {
+                flush(&mut batch);
+                continue;
+            }
+            Err(e) => {
+                flush(&mut batch);
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                tracing::warn!(port = name, ?e, "serial port status failed; closing");
+                if app.state::<SerialManager>().drop_failed(&stop) {
+                    emit_state(&app, false, None, Some(format!("{name} closed: {e}")));
+                }
+                return;
+            }
+        }
         match port.read(&mut chunk) {
             Ok(0) => flush(&mut batch),
             Ok(n) => {
@@ -202,9 +223,7 @@ fn reader_loop<R: Runtime>(app: AppHandle<R>, mut port: Box<dyn SerialPort>, nam
                 }
                 batch.extend_from_slice(&chunk[..n]);
                 // Flush as soon as the driver has nothing more queued, so an
-                // interactive echo shows immediately. Don't rely on the read
-                // timeout for this: on Windows the writer clone shares the
-                // handle, so its longer WRITE_TIMEOUT also applies to reads.
+                // interactive echo shows immediately.
                 let drained = port.bytes_to_read().map_or(true, |queued| queued == 0);
                 if drained || batch.len() >= BATCH_MAX || batch_started.elapsed() >= BATCH_INTERVAL {
                     flush(&mut batch);
@@ -227,6 +246,26 @@ fn reader_loop<R: Runtime>(app: AppHandle<R>, mut port: Box<dyn SerialPort>, nam
         }
     }
     flush(&mut batch);
+}
+
+/// Windows: block here, not in `ReadFile`. serialport opens the COM handle for
+/// synchronous I/O and the writer is a `DuplicateHandle` of the same file
+/// object, so Windows serializes them: a keystroke's `WriteFile` would wait
+/// for a pending idle `ReadFile` to time out (seconds). Only reading once the
+/// driver reports queued bytes keeps every `ReadFile` instant.
+#[cfg(windows)]
+fn wait_for_input(port: &dyn SerialPort) -> serialport::Result<bool> {
+    if port.bytes_to_read()? > 0 {
+        return Ok(true);
+    }
+    std::thread::sleep(POLL_INTERVAL);
+    Ok(false)
+}
+
+/// Unix reads and writes on a tty don't block each other; `read` itself waits.
+#[cfg(not(windows))]
+fn wait_for_input(_port: &dyn SerialPort) -> serialport::Result<bool> {
+    Ok(true)
 }
 
 fn emit_state<R: Runtime>(app: &AppHandle<R>, open: bool, port: Option<String>, error: Option<String>) {
