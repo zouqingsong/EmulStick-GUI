@@ -22,6 +22,7 @@
   let rts = $state(true);
   let logEl: HTMLDivElement | undefined = $state();
   const s = serial.settings;
+  let baudSelection = $state(BAUDS.includes(s.baudRate) ? String(s.baudRate) : 'custom');
 
   const lines = $derived.by(() => {
     void serial.version;
@@ -127,6 +128,14 @@
     follow = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 24;
   }
 
+  function selectBaud(value: string) {
+    baudSelection = value;
+    if (value !== 'custom') {
+      s.baudRate = Number(value);
+      saveSettings();
+    }
+  }
+
   function clearLog() {
     log.clear();
     touchLog();
@@ -166,10 +175,13 @@
     </div>
 
     <div class="serial-row settings">
-      <input class="baud" aria-label="Baud rate" list="serial-bauds" bind:value={s.baudRate} disabled={serial.open} inputmode="numeric" title="Baud rate" />
-      <datalist id="serial-bauds">
-        {#each BAUDS as b}<option value={b}></option>{/each}
-      </datalist>
+      <select class="baud" aria-label="Baud rate" value={baudSelection} onchange={(e) => selectBaud(e.currentTarget.value)} disabled={serial.open} title="Baud rate">
+        {#each BAUDS as b}<option value={b}>{b}</option>{/each}
+        <option value="custom">Custom…</option>
+      </select>
+      {#if baudSelection === 'custom'}
+        <input class="baud custom-baud" aria-label="Custom baud rate" type="number" min="1" step="1" bind:value={s.baudRate} disabled={serial.open} inputmode="numeric" title="Enter a custom baud rate" />
+      {/if}
       <select aria-label="Data bits" bind:value={s.dataBits} disabled={serial.open} title="Data bits">
         {#each [8, 7, 6, 5] as n}<option value={n}>{n}</option>{/each}
       </select>
@@ -235,7 +247,8 @@
     padding: 5px 6px; font: inherit; font-size: 12px;
   }
   select:disabled, input:disabled { opacity: 0.55; }
-  .baud { width: 90px; }
+  select.baud { width: 112px; }
+  .custom-baud { width: 90px; }
   label { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--muted); cursor: pointer; }
   button.icon { padding: 4px 8px; }
   button.small { padding: 3px 8px; font-size: 12px; }
