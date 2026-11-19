@@ -13,6 +13,9 @@ import type {
   ErrorEvent,
   LedReport,
   PassthroughFlags,
+  SerialConfig,
+  SerialPortInfo,
+  SerialState,
 } from "./types";
 
 export const commands = {
@@ -46,6 +49,13 @@ export const commands = {
   panelKeyboard: (modifiers: number, keys: number[], tap = false, text: string | null = null, enter = false) =>
     invoke<void>("panel_keyboard", { modifiers, keys, tap, text, enter }),
   releasePanelKeyboard: () => invoke<void>("release_panel_keyboard"),
+  serialListPorts: () => invoke<SerialPortInfo[]>("serial_list_ports"),
+  serialOpen: (port: string, config: SerialConfig) => invoke<void>("serial_open", { port, config }),
+  serialClose: () => invoke<void>("serial_close"),
+  serialWrite: (data: number[]) => invoke<void>("serial_write", { data }),
+  serialSetSignals: (signals: { dtr?: boolean; rts?: boolean }) =>
+    invoke<void>("serial_set_signals", { dtr: signals.dtr ?? null, rts: signals.rts ?? null }),
+  serialState: () => invoke<SerialState>("serial_state"),
 };
 
 export const events = {
@@ -59,4 +69,9 @@ export const events = {
     listen<LedReport>("keyboard_leds", (e) => cb(e.payload)),
   onError: (cb: (err: ErrorEvent) => void): Promise<UnlistenFn> =>
     listen<ErrorEvent>("error", (e) => cb(e.payload)),
+  /** Batched raw bytes received from the open serial port. */
+  onSerialData: (cb: (bytes: number[]) => void): Promise<UnlistenFn> =>
+    listen<number[]>("serial_data", (e) => cb(e.payload)),
+  onSerialState: (cb: (s: SerialState) => void): Promise<UnlistenFn> =>
+    listen<SerialState>("serial_state", (e) => cb(e.payload)),
 };

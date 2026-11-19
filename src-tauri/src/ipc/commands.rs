@@ -1,10 +1,11 @@
 //! Tauri command handlers (frontend → backend). Kept low-frequency per plan
 //! §3; high-rate input never crosses this boundary.
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::ipc::{events, ConnectionState, DeviceInfo};
 use crate::protocol::{keyboard::KEYBOARD_REPORT_LEN, mouse::MOUSE_REPORT_LEN};
+use crate::serial::{PortInfo, SerialConfig, SerialManager, SerialState};
 use crate::state::{AppState, PassthroughFlags};
 
 #[tauri::command]
@@ -250,4 +251,53 @@ pub async fn release_panel_keyboard(state: State<'_, AppState>) -> Result<(), St
         return Ok(());
     }
     state.conn.release_panel_keyboard().await
+}
+
+// ── Serial (UART) terminal ───────────────────────────────────────────────
+// Port I/O is blocking, so it runs on the blocking pool rather than the
+// async runtime or the main thread.
+
+async fn serial_blocking<T: Send + 'static>(
+    app: AppHandle,
+    f: impl FnOnce(&AppHandle, &SerialManager) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || f(&app, &app.state::<SerialManager>()))
+        .await
+        .map_err(|e| format!("Serial task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn serial_list_ports() -> Result<Vec<PortInfo>, String> {
+    tauri::async_runtime::spawn_blocking(crate::serial::list_ports)
+        .await
+        .map_err(|e| format!("Serial task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn serial_open(app: AppHandle, port: String, config: SerialConfig) -> Result<(), String> {
+    serial_blocking(app, move |app, mgr| mgr.open(app, &port, &config)).await
+}
+
+#[tauri::command]
+pub async fn serial_close(app: AppHandle) -> Result<(), String> {
+    serial_blocking(app, |app, mgr| {
+        mgr.close(app);
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn serial_write(app: AppHandle, data: Vec<u8>) -> Result<(), String> {
+    serial_blocking(app, move |_, mgr| mgr.write(&data)).await
+}
+
+#[tauri::command]
+pub async fn serial_set_signals(app: AppHandle, dtr: Option<bool>, rts: Option<bool>) -> Result<(), String> {
+    serial_blocking(app, move |_, mgr| mgr.set_signals(dtr, rts)).await
+}
+
+#[tauri::command]
+pub fn serial_state(serial: State<'_, SerialManager>) -> SerialState {
+    serial.state()
 }

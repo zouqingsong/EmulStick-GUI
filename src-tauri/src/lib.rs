@@ -6,6 +6,7 @@ pub mod ble;
 pub mod input;
 pub mod ipc;
 pub mod protocol;
+pub mod serial;
 pub mod state;
 
 use std::time::Duration;
@@ -38,6 +39,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(AppState::new())
+        .manage(serial::SerialManager::default())
         .invoke_handler(tauri::generate_handler![
             ipc::commands::scan_start,
             ipc::commands::scan_stop,
@@ -58,6 +60,12 @@ pub fn run() {
             ipc::commands::panel_keyboard,
             ipc::commands::release_panel_keyboard,
             ipc::commands::debug_tap_key,
+            ipc::commands::serial_list_ports,
+            ipc::commands::serial_open,
+            ipc::commands::serial_close,
+            ipc::commands::serial_write,
+            ipc::commands::serial_set_signals,
+            ipc::commands::serial_state,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -69,6 +77,7 @@ pub fn run() {
         // wedged BLE link can't hang the quit.
         if let RunEvent::ExitRequested { .. } = event {
             input::release_cursor_capture();
+            app_handle.state::<serial::SerialManager>().close(app_handle);
             let state = app_handle.state::<AppState>();
             state.panel_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             tauri::async_runtime::block_on(async {

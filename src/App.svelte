@@ -7,6 +7,7 @@
   import { commands, events } from "./lib/ipc";
   import VideoFeed from "./lib/VideoFeed.svelte";
   import KeyboardPanel from "./lib/KeyboardPanel.svelte";
+  import SerialPanel from "./lib/SerialPanel.svelte";
   import type {
     ConnectionState,
     DeviceInfo,
@@ -43,6 +44,7 @@
   let videoSelectedId = $state("");
   let absolutePointer = $state(false);
   let keyboardExpanded = $state(false);
+  let serialExpanded = $state(false);
   let fullscreen = $state(false);
 
   // While grabbed in screen mode the toolbar hides for a clean view; a brief
@@ -331,7 +333,12 @@
     if (view !== "compact" || !mainEl) return;
     try {
       const win = getCurrentWindow();
-      const content = mainEl.offsetHeight;
+      // scrollHeight, not offsetHeight: while a panel is open <main> is capped
+      // at 100vh, so its box height would just echo the current window size.
+      // Keep the window above the Dock / bottom of the work area.
+      const scr = window.screen as Screen & { availTop?: number };
+      const room = (scr.availTop ?? 0) + scr.availHeight - window.screenY - 40;
+      const content = Math.min(mainEl.scrollHeight, Math.max(room, 320));
       await win.setResizable(true);
       await win.setSize(new LogicalSize(COMPACT_W, content));
       await new Promise((r) => setTimeout(r, 50));
@@ -434,9 +441,20 @@
       clearTimeout(fitTimer);
       fitTimer = setTimeout(fitCompact, 40);
     };
+    // Watch the children too: once <main> is height-capped its own box stops
+    // changing when the content inside it grows.
     const ro = new ResizeObserver(schedule);
-    ro.observe(mainEl);
+    const observeAll = () => {
+      ro.disconnect();
+      ro.observe(mainEl!);
+      for (const child of mainEl!.children) ro.observe(child);
+      schedule();
+    };
+    observeAll();
+    const mo = new MutationObserver(observeAll);
+    mo.observe(mainEl, { childList: true });
     return () => {
+      mo.disconnect();
       ro.disconnect();
       clearTimeout(fitTimer);
     };
@@ -572,6 +590,7 @@
     {#if !fullscreen}
       <KeyboardPanel bind:expanded={keyboardExpanded} enabled={connected && passthrough.keyboard && !locked}
         onerror={(message) => (lastError = message)} />
+      <SerialPanel bind:expanded={serialExpanded} onerror={(message) => (lastError = message)} />
     {/if}
   </div>
 {:else}
@@ -687,5 +706,8 @@
         onerror={(message) => (lastError = message)} />
       <button class="screen-btn disconnect" onclick={disconnect}>🔌 Disconnect</button>
     {/if}
+
+    <!-- Independent of the BLE link: a USB-serial adapter on this computer. -->
+    <SerialPanel bind:expanded={serialExpanded} onerror={(message) => (lastError = message)} />
   </main>
 {/if}

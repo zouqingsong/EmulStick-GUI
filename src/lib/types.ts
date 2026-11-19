@@ -37,3 +37,23 @@ export interface ErrorEvent {
   code: string;
   message: string;
 }
+
+export interface SerialPortInfo {
+  name: string;
+  description: string | null;
+}
+
+export interface SerialConfig {
+  baudRate: number;
+  dataBits: 5 | 6 | 7 | 8;
+  parity: "none" | "odd" | "even";
+  stopBits: 1 | 2;
+  flowControl: "none" | "software" | "hardware";
+}
+
+export interface SerialState {
+  open: boolean;
+  port: string | null;
+  /** Set when the port closed unexpectedly (e.g. adapter unplugged). */
+  error: string | null;
+}

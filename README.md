@@ -56,6 +56,7 @@ EmulStick Desktop is available for macOS (Apple Silicon) and Windows x64.
 - 🖥️ **HDMI video / KVM mode** — a PiKVM-style full-window feed via any UVC capture card, with live source switching and hot-plug recovery.
 - 🔒 **Lock mode** — engage to forward everything; **`Ctrl`+`Alt`/`⌥`** is the always-on emergency unlock. Disconnects, write failures, and channel changes all drop to a safe all-keys-up state so nothing sticks down on the target.
 - ♻️ **Persisted device + auto-reconnect** — remembers the last dongle and reconnects with backoff after a drop.
+- 📟 **Serial terminal** — an RS-232/UART console for a USB-serial adapter on *this* computer (independent of the BLE link): watch the target's boot/debug log and send commands. Configurable baud/data/parity/stop/flow control, CR/LF/CRLF line endings, command history (↑/↓), hex view and hex send, timestamps, DTR/RTS control, copy/clear. Available in both the compact window and KVM mode. On macOS pick the `cu.*` device (the `tty.*` twin is hidden because it blocks waiting for carrier detect).
 - ⚡ **Tuned for feel** — ~1 kHz input is coalesced and flushed near the BLE connection interval so fast motion never overruns the link (see [`docs/plan.md`](docs/plan.md) §6.3).
 
 ## How it works
@@ -72,6 +73,7 @@ A **control plane** (Svelte frontend) is split from a **data plane** (Rust backe
   - `protocol/` — HID report encoders (keyboard 8 B / mouse 6 B), the `rdev::Key → HID usage` keymap, and the BLE UUIDs used by this implementation. Hardware-independent and unit-tested byte-for-byte against the worked examples in [`docs/protocol.md`](docs/protocol.md).
   - `ble/` — `btleplug` scan/connect with connect timeouts, Device Info readout, write-without-response to F801/F803, LED notifications.
   - `input/` — the `rdev::grab` thread, lock-mode state machine, relative-cursor capture, and §6.3 mouse coalescing.
+  - `serial/` — `serialport`-based UART session: port listing, open/close/write, DTR/RTS, and a reader thread that batches bytes into `serial_data` events.
   - `ipc/` — Tauri commands + events.
   - `state.rs` — passthrough flags and lock state.
 
