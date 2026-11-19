@@ -79,6 +79,11 @@
 
   const COMPACT_W = 400;
   const KVM = { w: 1280, h: 800 };
+  // Compact view with the serial terminal open: wider, user-resizable window.
+  const TERMINAL_MIN = { w: 760, h: 480 };
+  let terminalSize = { w: 1040, h: 720 };
+  let terminalSized = false;
+  const terminalLayout = $derived(view === "compact" && serialExpanded);
   let mainEl: HTMLElement | undefined = $state();
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -175,6 +180,7 @@
       // default camera if it's no longer present).
       videoSelectedId = (await store.get<string>("videoSource")) ?? "";
       handlePos = (await store.get<{ x: number; y: number }>("toolbarHandle")) ?? handlePos;
+      terminalSize = (await store.get<{ w: number; h: number }>("terminalWindow")) ?? terminalSize;
       const di = await commands.getDeviceInfo();
       if (di) {
         info = di;
@@ -331,6 +337,8 @@
   // innerHeight (robust whether setSize means inner or outer size).
   async function fitCompact() {
     if (view !== "compact" || !mainEl) return;
+    if (serialExpanded) return sizeTerminal();
+    if (terminalSized) await saveTerminalSize();
     try {
       const win = getCurrentWindow();
       // scrollHeight, not offsetHeight: while a panel is open <main> is capped
@@ -352,7 +360,38 @@
     }
   }
 
+  // The terminal needs room, so size the window once on opening and then leave
+  // it to the operator; the size they settle on is remembered.
+  async function sizeTerminal() {
+    if (terminalSized) return;
+    terminalSized = true;
+    try {
+      const win = getCurrentWindow();
+      const scr = window.screen as Screen & { availLeft?: number; availTop?: number };
+      const left = scr.availLeft ?? 0;
+      const top = scr.availTop ?? 0;
+      const w = clamp(terminalSize.w, Math.min(TERMINAL_MIN.w, scr.availWidth), scr.availWidth - 40);
+      const h = clamp(terminalSize.h, Math.min(TERMINAL_MIN.h, scr.availHeight), scr.availHeight - 60);
+      await win.setResizable(true);
+      await win.setSize(new LogicalSize(w, h));
+      if (window.screenX + w > left + scr.availWidth || window.screenY + h > top + scr.availHeight) {
+        await win.center();
+      }
+    } catch {
+      /* window APIs unavailable outside Tauri */
+    }
+  }
+
+  async function saveTerminalSize() {
+    terminalSized = false;
+    if (window.innerWidth < TERMINAL_MIN.w / 2) return;
+    terminalSize = { w: window.innerWidth, h: window.innerHeight };
+    await store?.set("terminalWindow", terminalSize);
+    await store?.save();
+  }
+
   async function enterKvm() {
+    if (terminalSized) await saveTerminalSize();
     view = "kvm";
     try {
       const win = getCurrentWindow();
@@ -595,7 +634,8 @@
   </div>
 {:else}
   <!-- ── Compact mode ─────────────────────────────────────────────────── -->
-  <main class="compact" bind:this={mainEl}>
+  <main class="compact" class:terminal={terminalLayout} bind:this={mainEl}>
+    <div class="compact-controls">
     <header>
       <h1>EmulStick</h1>
       <span class="badge" class:connected class:locked class:reconnecting>
@@ -706,8 +746,9 @@
         onerror={(message) => (lastError = message)} />
       <button class="screen-btn disconnect" onclick={disconnect}>🔌 Disconnect</button>
     {/if}
+    </div>
 
     <!-- Independent of the BLE link: a USB-serial adapter on this computer. -->
-    <SerialPanel bind:expanded={serialExpanded} onerror={(message) => (lastError = message)} />
+    <SerialPanel bind:expanded={serialExpanded} fill={terminalLayout} onerror={(message) => (lastError = message)} />
   </main>
 {/if}

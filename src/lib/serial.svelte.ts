@@ -40,6 +40,29 @@ function loadSettings(): SerialSettings {
 
 export const log = new TerminalLog(5000);
 
+// Raw received bytes for the interactive terminal, bounded, so a newly
+// mounted terminal (view switch) can replay the session.
+const RAW_LIMIT = 1 << 20;
+let raw: Uint8Array[] = [];
+let rawSize = 0;
+const rawListeners = new Set<(bytes: Uint8Array) => void>();
+
+export function rawHistory(): Uint8Array[] {
+  return raw.slice();
+}
+
+export function onRawData(listener: (bytes: Uint8Array) => void): () => void {
+  rawListeners.add(listener);
+  return () => rawListeners.delete(listener);
+}
+
+export function clearSession() {
+  log.clear();
+  raw = [];
+  rawSize = 0;
+  touchLog();
+}
+
 export const serial = $state({
   open: false,
   port: null as string | null,
@@ -66,6 +89,11 @@ export function initSerial() {
   started = true;
   events.onSerialData((bytes) => {
     log.append(bytes);
+    const chunk = Uint8Array.from(bytes);
+    raw.push(chunk);
+    rawSize += chunk.length;
+    while (rawSize > RAW_LIMIT && raw.length > 1) rawSize -= raw.shift()!.length;
+    for (const listener of rawListeners) listener(chunk);
     touchLog();
   });
   events.onSerialState((s) => {

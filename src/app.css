@@ -65,11 +65,44 @@ main.compact {
   flex-direction: column;
   gap: 12px;
 }
+.compact-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
 
 main.compact:has(.keyboard-panel[open]),
 main.compact:has(.serial-panel[open]) {
   max-height: 100vh;
   overflow-y: auto;
+}
+
+/* Serial terminal open without video: controls on the left, the terminal
+   fills the rest of the (now resizable) window. */
+main.compact.terminal {
+  display: grid;
+  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+  padding: 0;
+  gap: 0;
+}
+main.compact.terminal .compact-controls {
+  padding: 16px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+}
+@media (max-width: 680px) {
+  main.compact.terminal {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  main.compact.terminal .compact-controls {
+    max-height: 40vh;
+    border-right: 0;
+  }
 }
 
 header {

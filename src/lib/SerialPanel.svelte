@@ -2,11 +2,12 @@
   import { onMount, tick } from 'svelte';
   import { commands } from './ipc';
   import { encodeInput, formatLine, formatTime } from './serialTerminal';
-  import { initSerial, log, saveSettings, serial, touchLog } from './serial.svelte';
+  import { initSerial, clearSession, log, saveSettings, serial, touchLog } from './serial.svelte';
+  import SerialTerminalView from './SerialTerminalView.svelte';
   import type { SerialPortInfo } from './types';
 
-  let { expanded = $bindable(false), onerror }: {
-    expanded?: boolean; onerror: (message: string) => void;
+  let { expanded = $bindable(false), fill = false, onerror }: {
+    expanded?: boolean; fill?: boolean; onerror: (message: string) => void;
   } = $props();
 
   const BAUDS = [300, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 74880, 115200, 230400, 460800, 921600, 1000000, 1500000, 2000000, 3000000];
@@ -21,7 +22,14 @@
   let dtr = $state(true);
   let rts = $state(true);
   let logEl: HTMLDivElement | undefined = $state();
+  let panelEl: HTMLDetailsElement | undefined = $state();
+  let summaryEl: HTMLElement | undefined = $state();
+  let bodyHeight = $state(0);
+  let termHandle = $state<{ clear: () => void; copy: () => string; focus: () => void }>();
   const s = serial.settings;
+  // Type straight into the output like PuTTY; Hex/Time switch to the
+  // line log, which keeps the separate send box.
+  const interactive = $derived(!s.hex && !s.timestamps);
   let baudSelection = $state(BAUDS.includes(s.baudRate) ? String(s.baudRate) : 'custom');
 
   const lines = $derived.by(() => {
@@ -35,8 +43,25 @@
     refreshPorts();
   });
 
+  // <details> content isn't a reliable flex item across webviews, so in fill
+  // mode size the body explicitly from the panel's own height.
+  $effect(() => {
+    if (!fill || !expanded || !panelEl) {
+      bodyHeight = 0;
+      return;
+    }
+    const measure = () => {
+      if (panelEl && summaryEl) bodyHeight = Math.max(0, panelEl.clientHeight - summaryEl.offsetHeight);
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(panelEl);
+    measure();
+    return () => ro.disconnect();
+  });
+
   // Keep the newest output in view unless the operator scrolled up to read.
   $effect(() => {
+    if (interactive) return;
     void lines;
     if (!follow || !logEl) return;
     tick().then(() => logEl && (logEl.scrollTop = logEl.scrollHeight));
@@ -71,6 +96,8 @@
           stopBits: Number(s.stopBits) as 1, flowControl: s.flowControl,
         });
         dtr = rts = true;
+        await tick();
+        termHandle?.focus();
       }
     } catch (error) {
       onerror(String(error).replace(/^Error: /, ''));
@@ -137,12 +164,14 @@
   }
 
   function clearLog() {
-    log.clear();
-    touchLog();
+    clearSession();
+    termHandle?.clear();
   }
 
   async function copyLog() {
-    const text = log.view(s.hex).map((l) => formatLine(l, s.timestamps)).join('\n');
+    const text = interactive && termHandle
+      ? termHandle.copy()
+      : log.view(s.hex).map((l) => formatLine(l, s.timestamps)).join('\n');
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -155,12 +184,12 @@
   }
 </script>
 
-<details class="serial-panel" bind:open={expanded}>
-  <summary>
+<details class="serial-panel" class:fill bind:open={expanded} bind:this={panelEl}>
+  <summary bind:this={summaryEl}>
     Serial terminal
     {#if serial.open}<span class="serial-badge">● {serial.port?.replace(/^\/dev\//, '')} · {s.baudRate}</span>{/if}
   </summary>
-  <div class="serial-body">
+  <div class="serial-body" style:height={fill && bodyHeight ? `${bodyHeight}px` : null}>
     <div class="serial-row">
       <select class="grow" aria-label="Serial port" bind:value={s.port} disabled={serial.open || busy} title={s.port}>
         {#if !ports.length}<option value="">No serial ports found</option>{/if}
@@ -199,7 +228,9 @@
     <div class="serial-row options">
       <label title="Prefix each line with its receive time"><input type="checkbox" bind:checked={s.timestamps} onchange={saveSettings} />Time</label>
       <label title="Show received bytes as hex"><input type="checkbox" bind:checked={s.hex} onchange={saveSettings} />Hex</label>
-      <label title="Show sent lines in the log"><input type="checkbox" bind:checked={s.echo} onchange={saveSettings} />Echo</label>
+      {#if !interactive}
+        <label title="Show sent lines in the log"><input type="checkbox" bind:checked={s.echo} onchange={saveSettings} />Echo</label>
+      {/if}
       {#if serial.open}
         <label title="Data Terminal Ready (many dev boards use it for reset)"><input type="checkbox" checked={dtr} onchange={(e) => setSignal('dtr', e.currentTarget.checked)} />DTR</label>
         <label title="Request To Send"><input type="checkbox" checked={rts} onchange={(e) => setSignal('rts', e.currentTarget.checked)} />RTS</label>
@@ -209,6 +240,11 @@
       <button class="secondary small" onclick={clearLog}>Clear</button>
     </div>
 
+    {#if interactive}
+      <div class="serial-term">
+        <SerialTerminalView bind:handle={termHandle} enabled={serial.open} {onerror} />
+      </div>
+    {:else}
     <div class="serial-log" class:hex={s.hex} bind:this={logEl} onscroll={onScroll} role="log" aria-live="off" tabindex="-1">
       {#each lines as line}
         <div class:tx={line.dir === 'tx'}>{#if s.timestamps}<span class="ts">{formatTime(line.time)}</span>{/if}{#if line.dir === 'tx'}<span class="arrow">→</span>{/if}{line.text || '\u200b'}</div>
@@ -219,9 +255,11 @@
     {#if !follow}
       <button class="secondary small jump" onclick={() => { follow = true; logEl && (logEl.scrollTop = logEl.scrollHeight); }}>↓ Jump to latest</button>
     {/if}
+    {/if}
 
     {#if serial.error}<div class="serial-error" role="alert">{serial.error}</div>{/if}
 
+    {#if !interactive}
     <div class="serial-row send">
       <input class="grow mono-input" aria-label="Data to send" bind:value={input} onkeydown={onInputKey} disabled={!serial.open}
         placeholder={s.hexSend ? 'Hex bytes, e.g. 0D 0A' : 'Type a command, Enter to send (↑/↓ history)'} autocomplete="off" spellcheck="false" />
@@ -231,11 +269,19 @@
       <label class="hexsend" title="Interpret input as hex bytes"><input type="checkbox" bind:checked={s.hexSend} onchange={saveSettings} />Hex</label>
       <button onclick={send} disabled={!serial.open}>Send</button>
     </div>
+    {/if}
   </div>
 </details>
 
 <style>
   .serial-panel { flex: none; border-top: 1px solid var(--border); background: var(--panel); }
+  /* Fill mode: the panel owns a full-height column; the log takes the slack. */
+  .serial-panel.fill { min-height: 0; height: 100%; border-top: 0; overflow: hidden; }
+  .serial-panel.fill .serial-body { box-sizing: border-box; min-height: 0; padding-top: 2px; }
+  .serial-panel.fill .serial-log { flex: 1; min-height: 120px; height: auto; resize: none; font-size: 13px; }
+  .serial-term { height: var(--serial-log-height, 260px); min-height: 0; }
+  .serial-panel.fill .serial-term { flex: 1; min-height: 120px; height: auto; }
+  .serial-panel.fill .jump { bottom: 56px; }
   summary { padding: 10px 14px; cursor: pointer; font-weight: 600; display: list-item; }
   .serial-badge { margin-left: 8px; font-weight: 500; font-size: 12px; color: var(--green); }
   .serial-body { padding: 0 14px 10px; display: flex; flex-direction: column; gap: 6px; position: relative; }

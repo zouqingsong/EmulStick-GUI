@@ -19,7 +19,8 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 pub const SERIAL_DATA: &str = "serial_data";
 pub const SERIAL_STATE: &str = "serial_state";
 
-/// Read poll timeout. Also the worst-case latency before a pending batch flushes.
+/// Read poll timeout. (On Windows the shared handle ends up with WRITE_TIMEOUT
+/// instead; the reader flushes on an empty driver queue, not on timeout.)
 const READ_TIMEOUT: Duration = Duration::from_millis(20);
 /// Flush a batch at least this often while data keeps streaming in.
 const BATCH_INTERVAL: Duration = Duration::from_millis(30);
@@ -200,7 +201,12 @@ fn reader_loop<R: Runtime>(app: AppHandle<R>, mut port: Box<dyn SerialPort>, nam
                     batch_started = Instant::now();
                 }
                 batch.extend_from_slice(&chunk[..n]);
-                if batch.len() >= BATCH_MAX || batch_started.elapsed() >= BATCH_INTERVAL {
+                // Flush as soon as the driver has nothing more queued, so an
+                // interactive echo shows immediately. Don't rely on the read
+                // timeout for this: on Windows the writer clone shares the
+                // handle, so its longer WRITE_TIMEOUT also applies to reads.
+                let drained = port.bytes_to_read().map_or(true, |queued| queued == 0);
+                if drained || batch.len() >= BATCH_MAX || batch_started.elapsed() >= BATCH_INTERVAL {
                     flush(&mut batch);
                 }
             }
