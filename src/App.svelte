@@ -63,8 +63,8 @@
   const deviceName = $derived(savedDevice?.name ?? info?.model ?? "EmulStick");
   // Locking with neither channel enabled captures nothing — block it. (Exiting
   // lock must always stay allowed, so this only gates *entering*.)
-  const canGrab = $derived(passthrough.keyboard || passthrough.mouse);
-  const canLock = $derived(absolutePointer ? passthrough.keyboard : canGrab);
+  const canGrab = $derived(connected && (passthrough.keyboard || passthrough.mouse));
+  const canLock = $derived(connected && (absolutePointer ? passthrough.keyboard : canGrab));
 
   // The lock/escape hotkey is Ctrl+Alt; on a Mac keyboard those keys are
   // labelled Control + Option, so show platform-native names.
@@ -269,7 +269,6 @@
     await store?.delete("lastDevice");
     await store?.save();
     await run(commands.disconnect);
-    await exitKvm();
   }
 
   // Gate lock entry on the macOS Accessibility grant — without it the global
@@ -331,32 +330,44 @@
   // Compact mode auto-fits the window to its content (no blank space) and is
   // not user-resizable; only KVM mode is a large, resizable window.
   let fitTimer: ReturnType<typeof setTimeout> | undefined;
+  let fittingCompact = false;
+  let fitPending = false;
 
-  // Auto-size the compact window to its content. Two-pass: size to the measured
-  // content height, then correct for window chrome using the webview's own
-  // innerHeight (robust whether setSize means inner or outer size).
+  // Tauri setSize sets the inner size, even for a non-resizable window.
+  // Only resize when needed: resizing feeds back into the ResizeObserver.
   async function fitCompact() {
     if (view !== "compact" || !mainEl) return;
-    if (serialExpanded) return sizeTerminal();
-    if (terminalSized) await saveTerminalSize();
+    if (fittingCompact) {
+      fitPending = true;
+      return;
+    }
+    fittingCompact = true;
     try {
+      if (serialExpanded) return await sizeTerminal();
+      if (terminalSized) await saveTerminalSize();
       const win = getCurrentWindow();
+      if (await win.isFullscreen()) return;
       // scrollHeight, not offsetHeight: while a panel is open <main> is capped
       // at 100vh, so its box height would just echo the current window size.
       // Keep the window above the Dock / bottom of the work area.
       const scr = window.screen as Screen & { availTop?: number };
       const room = (scr.availTop ?? 0) + scr.availHeight - window.screenY - 40;
-      const content = Math.min(mainEl.scrollHeight, Math.max(room, 320));
-      await win.setResizable(true);
-      await win.setSize(new LogicalSize(COMPACT_W, content));
-      await new Promise((r) => setTimeout(r, 50));
-      const delta = content - window.innerHeight;
-      if (Math.abs(delta) > 1) {
-        await win.setSize(new LogicalSize(COMPACT_W, content + delta));
+      const content = Math.round(Math.min(mainEl.scrollHeight, Math.max(room, 320)));
+      if (view !== "compact" || serialExpanded) return;
+      if (await win.isResizable()) await win.setResizable(false);
+      if (view !== "compact" || serialExpanded) return;
+      if (Math.abs(window.innerWidth - COMPACT_W) > 1 || Math.abs(window.innerHeight - content) > 1) {
+        await win.setSize(new LogicalSize(COMPACT_W, content));
       }
-      await win.setResizable(false);
-    } catch {
-      /* window APIs unavailable outside Tauri */
+    } catch (error) {
+      lastError = humanize(String(error));
+    } finally {
+      fittingCompact = false;
+      if (fitPending) {
+        fitPending = false;
+        clearTimeout(fitTimer);
+        fitTimer = setTimeout(fitCompact, 40);
+      }
     }
   }
 
@@ -487,11 +498,14 @@
       ro.disconnect();
       ro.observe(mainEl!);
       for (const child of mainEl!.children) ro.observe(child);
+      for (const child of mainEl!.querySelectorAll(".compact-controls > *")) ro.observe(child);
       schedule();
     };
     observeAll();
     const mo = new MutationObserver(observeAll);
     mo.observe(mainEl, { childList: true });
+    const controls = mainEl.querySelector(".compact-controls");
+    if (controls) mo.observe(controls, { childList: true, subtree: true });
     return () => {
       mo.disconnect();
       ro.disconnect();
@@ -511,7 +525,7 @@
 
   // Clicking the screen grabs input (PiKVM-style). Exit via the Ctrl+Alt hotkey.
   function grabFromScreen() {
-    if (!locked && canGrab) toggleLock();
+    if (!locked && canLock) toggleLock();
   }
 
   // On grab: flash the "Ctrl+Alt to release" reminder, and slide the toolbar
@@ -567,7 +581,7 @@
 
       <div class="spacer"></div>
 
-      <select class="kvm-source" aria-label="Pointer mode" title="Absolute mode uses the experimental F804 pen channel" disabled={locked}
+      <select class="kvm-source" aria-label="Pointer mode" title="Absolute mode uses the experimental F804 pen channel" disabled={!connected || locked}
         value={absolutePointer ? "absolute" : "relative"}
         onchange={(event) => setPointerMode(event.currentTarget.value === "absolute")}>
         <option value="relative">Relative lock</option>
@@ -582,8 +596,8 @@
         </select>
       {/if}
 
-      <button class="kvm-chip" class:on={passthrough.keyboard} aria-pressed={passthrough.keyboard} title="Toggle keyboard passthrough" onclick={() => setFlag("keyboard", !passthrough.keyboard)}><span class="dot"></span>⌨️ Keyboard</button>
-      <button class="kvm-chip" class:on={passthrough.mouse} aria-pressed={passthrough.mouse} title="Toggle mouse passthrough" onclick={() => setFlag("mouse", !passthrough.mouse)}><span class="dot"></span>🖱️ Mouse</button>
+      <button class="kvm-chip" disabled={!connected} class:on={passthrough.keyboard} aria-pressed={passthrough.keyboard} title="Toggle keyboard passthrough" onclick={() => setFlag("keyboard", !passthrough.keyboard)}><span class="dot"></span>⌨️ Keyboard</button>
+      <button class="kvm-chip" disabled={!connected} class:on={passthrough.mouse} aria-pressed={passthrough.mouse} title="Toggle mouse passthrough" onclick={() => setFlag("mouse", !passthrough.mouse)}><span class="dot"></span>🖱️ Mouse</button>
       <button class="kvm-chip" title="Target system OS — when it differs from this computer, Alt/⌘/Win are remapped so the modifiers line up" onclick={() => setTarget(!targetMac)}>{@render osIcon(targetMac)}{targetMac ? "macOS" : "Windows"}</button>
 
       <button
@@ -618,6 +632,8 @@
         <button class="link" onclick={openAxSettings}>Open Settings</button>
         to capture input
       </div>
+    {:else if !connected}
+      <div class="kvm-hint">Camera and serial terminal work without EmulStick. Connect a device to forward input.</div>
     {:else if !locked && !canGrab}
       <div class="kvm-hint">Enable Keyboard or Mouse to capture input</div>
     {:else if !locked && !absolutePointer}
@@ -642,6 +658,8 @@
         {locked ? "LOCKED · " : ""}{reconnecting ? "Reconnecting…" : connection}
       </span>
     </header>
+
+    <button class="screen-btn" onclick={enterKvm}>🖥️ Open screen / camera</button>
 
     {#if lastError}
       <div class="error" role="alert">
@@ -741,7 +759,6 @@
         {locked ? `🔒 Exit lock · ${hotkey}` : !canLock ? "Enable a channel to lock" : absolutePointer ? "Lock keyboard" : "🔓 Enter lock"}
       </button>
 
-      <button class="screen-btn" onclick={enterKvm}>🖥️ Open screen</button>
       <KeyboardPanel bind:expanded={keyboardExpanded} enabled={connected && passthrough.keyboard && !locked}
         onerror={(message) => (lastError = message)} />
       <button class="screen-btn disconnect" onclick={disconnect}>🔌 Disconnect</button>

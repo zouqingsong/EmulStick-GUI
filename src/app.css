@@ -64,18 +64,15 @@ main.compact {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  max-height: 100vh;
+  overflow-y: auto;
 }
 .compact-controls {
   display: flex;
   flex-direction: column;
   gap: 12px;
   min-width: 0;
-}
-
-main.compact:has(.keyboard-panel[open]),
-main.compact:has(.serial-panel[open]) {
-  max-height: 100vh;
-  overflow-y: auto;
+  flex-shrink: 0;
 }
 
 /* Serial terminal open without video: controls on the left, the terminal
@@ -93,6 +90,7 @@ main.compact.terminal .compact-controls {
   padding: 16px;
   overflow-y: auto;
   border-right: 1px solid var(--border);
+  min-height: 0;
 }
 @media (max-width: 680px) {
   main.compact.terminal {
